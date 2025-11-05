@@ -2,39 +2,28 @@
     import { onMount } from 'svelte';
     import { createClient } from '@supabase/supabase-js';
     import { error } from '@sveltejs/kit';
+    // ⭐️ Chart.js 라이브러리 임포트 ⭐️
+    import Chart from 'chart.js/auto'; 
 
-    // ⭐️ Vercel에 설정된 환경 변수를 클라이언트에서 사용하기 위한 변수
-    // VITE_PUBLIC_SUPABASE_URL과 VITE_PUBLIC_SUPABASE_ANON_KEY를 사용해야 합니다.
     const supabaseUrl = import.meta.env.VITE_PUBLIC_SUPABASE_URL;
     const supabaseAnonKey = import.meta.env.VITE_PUBLIC_SUPABASE_ANON_KEY;
     const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
-    let storeId = ''; // 사장님이 입력할 가게 ID (UUID)
-    let isAuthenticated = false; // 인증 상태
-    let storeName = ''; // 조회된 가게 이름
-    let currentView = 'login'; // 'login' 또는 'dashboard'
+    let storeId = ''; 
+    let isAuthenticated = false; 
+    let storeName = ''; 
+    let currentView = 'login';
     let loading = false;
     let errorMessage = '';
 
     // 📊 대시보드 지표 상태
-    let totalIssued = 0; // 총 발급 수
-    let totalUsed = 0;   // 총 사용 수
+    let totalIssued = 0; 
+    let totalUsed = 0;   
+    let chartCanvas; // 캔버스 요소 참조 변수
 
-    // ⭐️⭐️ 새로 추가: 컴포넌트 마운트 시 URL 쿼리 파라미터 읽기 ⭐️⭐️
-    onMount(() => {
-        // 브라우저 환경에서만 실행됩니다.
-        if (window && window.location) {
-            const urlParams = new URLSearchParams(window.location.search);
-            const idFromUrl = urlParams.get('id'); // URL에서 '?id=UUID' 값을 가져옴
-            
-            if (idFromUrl) {
-                storeId = idFromUrl; // ⭐️ UUID를 입력창에 자동 채움 ⭐️
-                // ⭐️ URL에 ID가 있으면 바로 인증을 시도합니다. (UX 개선) ⭐️
-                authenticateAndLoad(); 
-            }
-        }
-    });
-
+    // ⭐️ 차트 인스턴스 ⭐️
+    let doughnutChart; 
+    
     // ⭐️ 사장님 인증 및 대시보드 로드 ⭐️
     async function authenticateAndLoad() {
         if (!storeId) {
@@ -77,9 +66,9 @@
 
         if (issuedError) {
             console.error("Issued Count Error:", issuedError);
-            totalIssued = '오류';
+            totalIssued = 0; // 오류 시 0으로 설정
         } else {
-            totalIssued = issuedCount;
+            totalIssued = issuedCount || 0;
         }
 
         // [B] 우리 가게 쿠폰이 사용된 전체 수 (CouponDeals)
@@ -91,7 +80,8 @@
         
         if (dealsError || !myDeals) {
             console.error("Deals List Error:", dealsError);
-            totalUsed = '오류';
+            totalUsed = 0;
+            updateChart(totalIssued, 0); // 차트 업데이트 (오류 시 사용 0)
             return;
         }
 
@@ -106,11 +96,74 @@
 
         if (usedError) {
             console.error("Used Count Error:", usedError);
-            totalUsed = '오류';
+            totalUsed = 0;
         } else {
-            totalUsed = usedCount;
+            totalUsed = usedCount || 0;
+        }
+        
+        // ⭐️ 데이터 로드 후 차트 업데이트 ⭐️
+        updateChart(totalIssued, totalUsed);
+    }
+    
+    // ⭐️ 차트 생성 및 업데이트 함수 ⭐️
+    function updateChart(issued, used) {
+        const unused = issued - used;
+        const data = {
+            labels: ['사용 완료', '미사용'],
+            datasets: [{
+                data: [used, unused < 0 ? 0 : unused], // 미사용 수가 음수가 되지 않도록 방어
+                backgroundColor: ['#28a745', '#ffc107'], // 초록색(사용), 노란색(미사용)
+                hoverBackgroundColor: ['#1e7e34', '#e0a800'],
+                borderWidth: 1,
+            }]
+        };
+
+        if (doughnutChart) {
+            // 차트가 이미 있다면 데이터만 업데이트
+            doughnutChart.data = data;
+            doughnutChart.update();
+        } else if (chartCanvas) {
+            // 차트가 없다면 새로 생성
+            doughnutChart = new Chart(chartCanvas, {
+                type: 'doughnut',
+                data: data,
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            position: 'bottom',
+                        },
+                        title: {
+                            display: true,
+                            text: '전체 발급 쿠폰 사용 비율',
+                            font: { size: 16 }
+                        }
+                    }
+                }
+            });
         }
     }
+    
+    // ⭐️ onMount에서 URL 쿼리 파라미터 읽기 ⭐️
+    onMount(async () => {
+        // Chart.js를 CDN에서 로드 (Vercel 배포를 위해)
+        // 🚨 SvelteKit에서는 'import Chart from "chart.js/auto";'만으로 충분합니다.
+
+        // URL 쿼리 파라미터 읽기
+        if (window && window.location) {
+            const urlParams = new URLSearchParams(window.location.search);
+            const idFromUrl = urlParams.get('id'); 
+            
+            if (idFromUrl) {
+                storeId = idFromUrl; 
+                authenticateAndLoad(); 
+            }
+        }
+    });
+
+    // ⭐️ 사장님 인증 및 대시보드 로드 (정의는 위쪽에 있음) ⭐️
+
 </script>
 
 <div class="owner-page-container">
@@ -159,6 +212,12 @@
                 </div>
             </div>
             
+            <!-- ⭐️⭐️ 차트 캔버스 추가 ⭐️⭐️ -->
+            <div class="chart-container">
+                <!-- chartCanvas 변수에 이 캔버스 요소를 바인딩합니다. -->
+                <canvas bind:this={chartCanvas}></canvas> 
+            </div>
+
             <p class="data-note">데이터는 실시간 반영됩니다.</p>
             
             <button on:click={() => currentView = 'login'} class="logout-button">
@@ -287,6 +346,14 @@
         border: none;
         border-radius: 8px;
         cursor: pointer;
+    }
+    
+    /* ⭐️⭐️ 차트 컨테이너 스타일 ⭐️⭐️ */
+    .chart-container {
+        position: relative;
+        height: 300px; /* 차트의 높이 지정 */
+        width: 100%;
+        margin-bottom: 30px;
     }
     
     /* 모바일 최적화 */
