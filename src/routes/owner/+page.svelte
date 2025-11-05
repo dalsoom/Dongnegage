@@ -2,11 +2,16 @@
     import { onMount } from 'svelte';
     import { createClient } from '@supabase/supabase-js';
     import { error } from '@sveltejs/kit';
-    // ⭐️ Chart.js 라이브러리 임포트 ⭐️
-    import Chart from 'chart.js/auto'; 
-
+    
+    // Chart.js import는 Vercel 빌드 오류를 피하기 위해 삭제되었습니다. (CDN 로드 방식 사용)
+    
     const supabaseUrl = import.meta.env.VITE_PUBLIC_SUPABASE_URL;
     const supabaseAnonKey = import.meta.env.VITE_PUBLIC_SUPABASE_ANON_KEY;
+    
+    if (!supabaseUrl || !supabaseAnonKey) {
+        console.error("환경 설정 오류: Supabase URL 또는 키가 로드되지 않았습니다.");
+    }
+    
     const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
     let storeId = ''; 
@@ -21,8 +26,8 @@
     let totalUsed = 0;   
     let chartCanvas; // 캔버스 요소 참조 변수
 
-    // ⭐️ 차트 인스턴스 ⭐️
     let doughnutChart; 
+    let ChartLibrary; // ⭐️ 로드된 Chart 객체를 저장할 변수 ⭐️
     
     // ⭐️ 사장님 인증 및 대시보드 로드 ⭐️
     async function authenticateAndLoad() {
@@ -55,53 +60,58 @@
         await loadDashboardData(storeId);
         loading = false;
     }
+    
+    // ⭐️ Chart.js 라이브러리 로드 함수 ⭐️
+    async function loadChartLibrary() {
+        // Chart 객체가 로드되지 않았다면 CDN을 통해 로드합니다.
+        if (typeof window.Chart === 'undefined') {
+            await new Promise(resolve => {
+                const script = document.createElement('script');
+                script.src = 'https://cdn.jsdelivr.net/npm/chart.js'; // ⭐️ CDN 주소 사용 ⭐️
+                script.onload = () => {
+                    ChartLibrary = window.Chart; // 전역 Chart 객체 참조
+                    resolve();
+                };
+                document.head.appendChild(script);
+            });
+        } else {
+             ChartLibrary = window.Chart; // 이미 로드되었다면 참조
+        }
+    }
 
-    // 📊 대시보드 데이터 로드 함수
+
+    // 📊 대시보드 데이터 로드 함수 (데이터 로드 후 차트 생성)
     async function loadDashboardData(id) {
-        // [A] 우리 가게 QR에서 발급된 전체 쿠폰 수 (IssuedCoupons.origin_store_id)
+        // ⭐️ 차트 라이브러리가 로드될 때까지 기다립니다. ⭐️
+        await loadChartLibrary();
+        
+        // [A] 우리 가게 QR에서 발급된 전체 쿠폰 수
         const { count: issuedCount, error: issuedError } = await supabase
             .from('IssuedCoupons')
             .select('*', { count: 'exact', head: true })
             .eq('origin_store_id', id);
 
-        if (issuedError) {
-            console.error("Issued Count Error:", issuedError);
-            totalIssued = 0; // 오류 시 0으로 설정
-        } else {
-            totalIssued = issuedCount || 0;
-        }
+        if (issuedError) { totalIssued = 0; } else { totalIssued = issuedCount || 0; }
 
-        // [B] 우리 가게 쿠폰이 사용된 전체 수 (CouponDeals)
-        // 1. 우리 가게가 발행한 모든 deal_id 목록을 찾아야 합니다.
+        // [B] 우리 가게 쿠폰이 사용된 전체 수
         const { data: myDeals, error: dealsError } = await supabase
             .from('CouponDeals')
             .select('id')
             .eq('store_id', id);
         
-        if (dealsError || !myDeals) {
-            console.error("Deals List Error:", dealsError);
-            totalUsed = 0;
-            updateChart(totalIssued, 0); // 차트 업데이트 (오류 시 사용 0)
-            return;
+        let usedCount = 0;
+        if (!dealsError && myDeals) {
+            const myDealIds = myDeals.map(deal => deal.id); 
+            const { count: countResult } = await supabase
+                .from('IssuedCoupons')
+                .select('*', { count: 'exact', head: true })
+                .in('deal_id', myDealIds)
+                .eq('status', 'used');
+            usedCount = countResult || 0;
         }
-
-        const myDealIds = myDeals.map(deal => deal.id); // [1, 2, 3, ...]
+        totalUsed = usedCount;
         
-        // 2. 해당 deal_id로 발급된 쿠폰 중 'used' 상태인 것만 카운트
-        const { count: usedCount, error: usedError } = await supabase
-            .from('IssuedCoupons')
-            .select('*', { count: 'exact', head: true })
-            .in('deal_id', myDealIds)
-            .eq('status', 'used');
-
-        if (usedError) {
-            console.error("Used Count Error:", usedError);
-            totalUsed = 0;
-        } else {
-            totalUsed = usedCount || 0;
-        }
-        
-        // ⭐️ 데이터 로드 후 차트 업데이트 ⭐️
+        // ⭐️ 데이터 로드 완료 후 차트 업데이트 ⭐️
         updateChart(totalIssued, totalUsed);
     }
     
@@ -111,29 +121,26 @@
         const data = {
             labels: ['사용 완료', '미사용'],
             datasets: [{
-                data: [used, unused < 0 ? 0 : unused], // 미사용 수가 음수가 되지 않도록 방어
-                backgroundColor: ['#28a745', '#ffc107'], // 초록색(사용), 노란색(미사용)
+                data: [used, unused < 0 ? 0 : unused], 
+                backgroundColor: ['#28a745', '#ffc107'], 
                 hoverBackgroundColor: ['#1e7e34', '#e0a800'],
                 borderWidth: 1,
             }]
         };
 
         if (doughnutChart) {
-            // 차트가 이미 있다면 데이터만 업데이트
             doughnutChart.data = data;
             doughnutChart.update();
-        } else if (chartCanvas) {
-            // 차트가 없다면 새로 생성
-            doughnutChart = new Chart(chartCanvas, {
+        } else if (chartCanvas && ChartLibrary) { // ⬅️ ChartLibrary 객체가 존재하는지 확인
+            // Vercel 빌드 성공을 위해 Chart 객체는 로드된 ChartLibrary를 사용합니다.
+            doughnutChart = new ChartLibrary(chartCanvas, { 
                 type: 'doughnut',
                 data: data,
                 options: {
                     responsive: true,
                     maintainAspectRatio: false,
                     plugins: {
-                        legend: {
-                            position: 'bottom',
-                        },
+                        legend: { position: 'bottom' },
                         title: {
                             display: true,
                             text: '전체 발급 쿠폰 사용 비율',
@@ -147,10 +154,9 @@
     
     // ⭐️ onMount에서 URL 쿼리 파라미터 읽기 ⭐️
     onMount(async () => {
-        // Chart.js를 CDN에서 로드 (Vercel 배포를 위해)
-        // 🚨 SvelteKit에서는 'import Chart from "chart.js/auto";'만으로 충분합니다.
-
-        // URL 쿼리 파라미터 읽기
+        // 1. Chart.js 로드 (loadDashboardData 내부에서 비동기적으로 처리됨)
+        
+        // 2. URL 쿼리 파라미터 읽기 (기존 로직 유지)
         if (window && window.location) {
             const urlParams = new URLSearchParams(window.location.search);
             const idFromUrl = urlParams.get('id'); 
@@ -161,9 +167,6 @@
             }
         }
     });
-
-    // ⭐️ 사장님 인증 및 대시보드 로드 (정의는 위쪽에 있음) ⭐️
-
 </script>
 
 <div class="owner-page-container">
@@ -214,7 +217,6 @@
             
             <!-- ⭐️⭐️ 차트 캔버스 추가 ⭐️⭐️ -->
             <div class="chart-container">
-                <!-- chartCanvas 변수에 이 캔버스 요소를 바인딩합니다. -->
                 <canvas bind:this={chartCanvas}></canvas> 
             </div>
 
@@ -351,7 +353,7 @@
     /* ⭐️⭐️ 차트 컨테이너 스타일 ⭐️⭐️ */
     .chart-container {
         position: relative;
-        height: 300px; /* 차트의 높이 지정 */
+        height: 300px;
         width: 100%;
         margin-bottom: 30px;
     }
